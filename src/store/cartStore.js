@@ -9,10 +9,24 @@ const CART_KEY = 'ss_guest_cart';
 const FREE_DELIVERY_THRESHOLD = 999;
 const DELIVERY_CHARGE = 49;
 
+const isPositiveQty = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 1;
+
+// Load a guest cart from localStorage, keeping only well-formed entries
+// { product: {...}, quantity: <positive integer> }. Old / malformed entries
+// (missing product, bad quantity, stale `items` wrappers, etc.) are dropped
+// so totals and merge logic never hit undefined fields.
 const loadGuestCart = () => {
   try {
     const raw = localStorage.getItem(CART_KEY);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((it) => it && it.product && typeof it.product === 'object' && typeof it.product._id === 'string')
+      .map((it) => ({
+        product: it.product,
+        quantity: Math.max(1, Math.trunc(isPositiveQty(it.quantity) ? it.quantity : 1)),
+      }));
   } catch {
     return [];
   }
@@ -25,9 +39,12 @@ export const computeGuestTotals = (items) => {
   let subtotal = 0;
   let discount = 0;
   for (const it of items) {
-    const p = it.product;
-    subtotal += p.price * it.quantity;
-    discount += Math.max(0, (p.mrp - p.price) * it.quantity);
+    const p = it?.product;
+    const price = Number(p?.price);
+    if (!Number.isFinite(price)) continue;
+    const mrp = Number(p?.mrp);
+    subtotal += price * it.quantity;
+    discount += Math.max(0, (Number.isFinite(mrp) ? mrp : price) - price) * it.quantity;
   }
   const deliveryCharge = subtotal >= FREE_DELIVERY_THRESHOLD || subtotal === 0 ? 0 : DELIVERY_CHARGE;
   return {
@@ -37,6 +54,19 @@ export const computeGuestTotals = (items) => {
     total: subtotal + deliveryCharge,
     freeDeliveryThreshold: FREE_DELIVERY_THRESHOLD,
     deliveryChargeRate: DELIVERY_CHARGE,
+  };
+};
+
+// Guard against a malformed / partial server payload: items must be an array,
+// totals an object, totalQuantity a number. Empty state is the safest default.
+const normalizeServerCart = (cart) => {
+  const items = Array.isArray(cart?.items) ? cart.items : [];
+  return {
+    items,
+    totals: cart?.totals && typeof cart.totals === 'object' ? cart.totals : computeGuestTotals(items),
+    totalQuantity: Number.isFinite(cart?.totalQuantity)
+      ? cart.totalQuantity
+      : items.reduce((s, it) => s + (isPositiveQty(it?.quantity) ? it.quantity : 0), 0),
   };
 };
 
@@ -67,7 +97,7 @@ export const useCartStore = create((set, get) => ({
     if (!silent) set({ loading: true });
     try {
       const res = await cartService.get();
-      const cart = res.data;
+      const cart = normalizeServerCart(res.data.cart);
       set({
         items: cart.items,
         totals: cart.totals,
@@ -86,7 +116,7 @@ export const useCartStore = create((set, get) => ({
     if (token && get().synced) {
       try {
         const res = await cartService.add(product._id, quantity);
-        get().applyServerCart(res.data);
+        get().applyServerCart(res.data.cart);
         return true;
       } catch (err) {
         useUIStore.getState().toast(err.message || 'Could not add to cart', 'error');
@@ -113,7 +143,7 @@ export const useCartStore = create((set, get) => ({
     if (getToken() && get().synced) {
       try {
         const res = await cartService.update(productId, quantity);
-        get().applyServerCart(res.data);
+        get().applyServerCart(res.data.cart);
         return;
       } catch (err) {
         useUIStore.getState().toast(err.message, 'error');
@@ -133,7 +163,7 @@ export const useCartStore = create((set, get) => ({
     if (getToken() && get().synced) {
       try {
         const res = await cartService.remove(productId);
-        get().applyServerCart(res.data);
+        get().applyServerCart(res.data.cart);
         return;
       } catch (err) {
         useUIStore.getState().toast(err.message, 'error');
@@ -156,10 +186,11 @@ export const useCartStore = create((set, get) => ({
   },
 
   applyServerCart: (cart) => {
+    const normalized = normalizeServerCart(cart);
     set({
-      items: cart.items,
-      totals: cart.totals,
-      totalQuantity: cart.totalQuantity,
+      items: normalized.items,
+      totals: normalized.totals,
+      totalQuantity: normalized.totalQuantity,
       loaded: true,
       synced: true,
     });

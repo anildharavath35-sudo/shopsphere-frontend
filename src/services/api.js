@@ -3,16 +3,13 @@ import { getToken } from '../utils/storage';
 
 /**
  * Central Axios instance.
- * - baseURL '/api' by default (Vite proxies /api to the Express server in dev)
- * - when VITE_API_URL is set (e.g. Vercel -> Render), requests go there directly
+ * - baseURL '/api' (Vite proxies /api to the Express server)
  * - attaches the JWT from storage on every request
  * - unwraps { success, message, data } responses
  * - normalizes errors into a friendly { message, code, status }
  */
-const apiBaseUrl = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '') || '/api';
-
 const api = axios.create({
-  baseURL: apiBaseUrl,
+  baseURL: '/api',
   headers: { 'Content-Type': 'application/json' },
 });
 
